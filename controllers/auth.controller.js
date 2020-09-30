@@ -30,6 +30,16 @@ exports.getLogin = (req, res, next) => {
 exports.postLogin = (req, res, next) => {
   const email = req.body.email;
   const password = req.body.password;
+
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(422).render("auth/login", {
+      pageTitle: "Login",
+      path: "/login",
+      errorMessage: errors.array()[0].msg
+    });
+  }
+
   User.findOne({ email: email })
     .then(user => {
       if (!user) {
@@ -44,7 +54,11 @@ exports.postLogin = (req, res, next) => {
             req.session.isLoggedIn = true;
             req.session.user = user;
             return req.session.save(err => {
-              console.log(err);
+              if (err) {
+                const error = new Error(err);
+                err.httpStatusCode = 500;
+                return next(error);
+              }
               res.redirect("/");
             });
           }
@@ -54,12 +68,15 @@ exports.postLogin = (req, res, next) => {
           res.redirect("/login");
         })
         .catch(err => {
-          console.log(err);
           req.flash("error", "Invalid Email or Password");
           res.redirect("/login");
         });
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 exports.getSignUp = (req, res, next) => {
@@ -84,7 +101,6 @@ exports.postSignUp = (req, res, next) => {
 
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    // console.log(errors.array());
     return res.status(422).render("auth/signup", {
       pageTitle: "Sign Up",
       path: "/signup",
@@ -113,12 +129,20 @@ exports.postSignUp = (req, res, next) => {
       //     html: '<h1>You have successfully signed up!</h1>'
       // });
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 exports.postLogout = (req, res, next) => {
   req.session.destroy(err => {
-    console.log(err);
+    if (err) {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    }
     res.redirect("/");
   });
 };

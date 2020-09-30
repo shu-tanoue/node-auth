@@ -1,5 +1,11 @@
+require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
+const PDFDocument = require("pdfkit");
+
 const Order = require("../models/order.model");
 const Product = require("../models/product.model");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 //getting all products
 exports.getProducts = (req, res, next) => {
@@ -12,7 +18,11 @@ exports.getProducts = (req, res, next) => {
         path: "/" //for navigation bar's active button
       });
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 //getting one product
@@ -20,14 +30,17 @@ exports.getOneProduct = (req, res, next) => {
   const prodId = req.params.productId;
   Product.findById(prodId)
     .then(result => {
-      console.log(result);
       res.render("shops/product-detail", {
         pageTitle: result.title,
         product: result,
         path: "/products" //for navigation bar's active button
       });
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 exports.getCart = (req, res, next) => {
@@ -42,7 +55,12 @@ exports.getCart = (req, res, next) => {
         path: "/cart"
       });
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      console.log(err);
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 exports.postCart = (req, res, next) => {
@@ -52,9 +70,15 @@ exports.postCart = (req, res, next) => {
       return req.user.addToCart(product);
     })
     .then(() => {
+      console.log("Added To Cart");
       res.redirect("/cart");
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      console.log(err);
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 exports.postCartDeleteProduct = (req, res, next) => {
@@ -64,7 +88,11 @@ exports.postCartDeleteProduct = (req, res, next) => {
     .then(() => {
       res.redirect("/cart");
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 exports.postOrder = (req, res, next) => {
@@ -93,7 +121,11 @@ exports.postOrder = (req, res, next) => {
     .then(() => {
       res.redirect("/orders");
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
 exports.getOrders = (req, res, next) => {
@@ -105,12 +137,144 @@ exports.getOrders = (req, res, next) => {
         orders: orders
       });
     })
-    .catch(err => console.log(err));
+    .catch(err => {
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
 };
 
-// exports.getCheckOut = (req, res, next) => {
-//     res.render('shops/checkout', {
-//         pageTitle: 'Checkout',
-//         path: '/checkout'
-//     })
-// }
+exports.getCheckOut = (req, res, next) => {
+  let products;
+  let total = 0;
+  let stripePubKey = process.env.STRIPE_PUB_KEY;
+
+  req.user
+    .populate("cart.items.productId")
+    .execPopulate()
+    .then(user => {
+      products = user.cart.items;
+      total = 0;
+      products.forEach(p => {
+        total += p.quantity * p.productId.price;
+      });
+
+      return stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: products.map(p => {
+          return {
+            name: p.productId.title,
+            description: p.productId.description,
+            amount: p.productId.price * 100,
+            currency: "usd",
+            quantity: p.quantity
+          };
+        }),
+        success_url:
+          req.protocol + "://" + req.get("host") + "/checkout/success",
+        cancel_url: req.protocol + "://" + req.get("host") + "/checkout/cancel"
+      });
+    })
+    .then(session => {
+      return res.render("shops/checkout", {
+        pageTitle: "Checkout",
+        path: "/checkout",
+        products: products,
+        totalSum: total,
+        stripePubKey: stripePubKey,
+        sessionId: session.id
+      });
+    })
+    .catch(err => {
+      console.log(err);
+      const error = new Error(err);
+      err.httpStatusCode = 500;
+      return next(error);
+    });
+};
+
+exports.getCheckoutSuccess = (req, res, next) => {
+  req.user
+    .populate("cart.items.productId")
+    .execPopulate()
+    .then(user => {
+      const products = user.cart.items.map(item => {
+        return { quantity: item.quantity, product: { ...item.productId._doc } };
+      });
+      const order = new Order({
+        products: products,
+        user: {
+          email: req.user.email,
+          userId: req.user
+        }
+      });
+      return order.save();
+    })
+    .then(() => {
+      return req.user.clearCart();
+    })
+    .then(() => {
+      res.redirect("/orders");
+    })
+    .catch(err => {
+      console.log(err);
+      const error = new Error(err);
+      error.httpStatusCode = 500;
+      return next(error);
+    });
+};
+
+exports.getInvoice = (req, res, next) => {
+  // console.log('getinvoice');
+  const orderId = req.params.orderId;
+  Order.findById(orderId)
+    .then(order => {
+      if (!order) {
+        return next(new Error("No order found."));
+      }
+
+      if (order.user.userId.toString() !== req.user._id.toString()) {
+        // return next(new Error('Unauthorized'))
+        const error = new Error(err);
+        error.httpStatusCode = 401;
+        return next(error);
+      }
+
+      const invoiceName = "invoice-" + orderId + ".pdf";
+      const invoicePath = path.join("data", "invoices", invoiceName);
+
+      const pdfDoc = new PDFDocument();
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        'inline; filename=" ' + invoiceName + ' " '
+      );
+
+      pdfDoc.pipe(fs.createWriteStream(invoicePath));
+      pdfDoc.pipe(res);
+
+      pdfDoc.fontSize(26).text("Invoice", {
+        underline: true
+      });
+      pdfDoc.text("-----------------------------");
+      let totalPrice = 0;
+      order.products.forEach(prod => {
+        totalPrice += prod.quantity * prod.product.price;
+        pdfDoc
+          .fontSize(14)
+          .text(
+            prod.product.title +
+              " - " +
+              prod.quantity +
+              " x " +
+              "$" +
+              prod.product.price
+          );
+      });
+      pdfDoc.text("-----------------------------");
+      pdfDoc.fontSize(20).text("Total Price: $" + totalPrice);
+
+      pdfDoc.end();
+    })
+    .catch(err => next(err));
+};
